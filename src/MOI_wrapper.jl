@@ -783,14 +783,10 @@ end
 
 function MOI.supports(
     ::Optimizer,
-    ::MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}},
-)
-    return true
-end
-
-function MOI.supports(
-    ::Optimizer,
-    ::MOI.ObjectiveFunction{MOI.ScalarQuadraticFunction{Float64}},
+    ::Union{
+        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}},
+        MOI.ObjectiveFunction{MOI.ScalarQuadraticFunction{Float64}},
+    },
 )
     return true
 end
@@ -808,19 +804,36 @@ function MOI.set(
     ::MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}},
     f::MOI.ScalarAffineFunction{Float64},
 )
-    numcol = length(model.variable_info)
-    obj = zeros(Float64, numcol)
+    num_vars = length(model.variable_info)
+    obj = zeros(Float64, num_vars)
     for term in f.terms
         col = column(model, term.variable)
         obj[col+1] += term.coefficient
     end
     # TODO(odow): cache the mask.
-    mask = ones(Cint, numcol)
+    mask = ones(Cint, num_vars)
     ret = Highs_changeColsCostByMask(model, mask, obj)
     _check_ret(ret)
     ret = Highs_changeObjectiveOffset(model, f.constant)
     _check_ret(ret)
-    model.hessian = nothing
+    if model.hessian !== nothing
+        index = Cint[row-1 for col in 1:num_vars for row in col:num_vars]
+        start = Cint[0]
+        for col in 1:num_vars
+            push!(start, start[end] + num_vars - col + 1)
+        end
+        ret = Highs_passHessian(
+            model,
+            num_vars,
+            length(index),
+            kTriangular,
+            start,
+            index,
+            fill(0.0, length(index)),
+        )
+        _check_ret(ret)
+        model.hessian = nothing
+    end
     return
 end
 
@@ -843,10 +856,11 @@ function MOI.set(
         if iszero(term.coefficient)
             continue
         end
-        i = model.variable_info[term.variable_1].column + 1
-        j = model.variable_info[term.variable_2].column + 1
-        push!(I, i < j ? i : j)
-        push!(J, i < j ? j : i)
+        i = model.variable_info[term.variable_1].column
+        j = model.variable_info[term.variable_2].column
+        row, col = (i > j) ? (i, j) : (j, i)
+        push!(I, row + 1)
+        push!(J, col + 1)
         push!(V, term.coefficient)
     end
     Q = SparseArrays.sparse(I, J, V, numcol, numcol)
@@ -2119,9 +2133,10 @@ function _copy_to_columns(dest::Optimizer, src::MOI.ModelLike, mapping)
         info.column = Cint(i - 1)
         mapping[x] = index
     end
-    fobj =
-        MOI.get(src, MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}}())
+    F = MOI.get(src, MOI.ObjectiveFunctionType())
+    fobj = MOI.get(src, MOI.ObjectiveFunction{F}())
     c = fill(0.0, numcols)
+
     for term in fobj.terms
         i = mapping[term.variable].value
         c[i] += term.coefficient
