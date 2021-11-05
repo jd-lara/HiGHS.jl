@@ -832,7 +832,7 @@ function MOI.set(
     numcol = length(model.variable_info)
     obj = zeros(Float64, numcol)
     for term in f.affine_terms
-        obj[column(model, term.variable_index)+1] += term.coefficient
+        obj[column(model, term.variable)+1] += term.coefficient
     end
     ret = Highs_changeColsCostByMask(model, ones(Cint, numcol), obj)
     _check_ret(ret)
@@ -843,8 +843,8 @@ function MOI.set(
         if iszero(term.coefficient)
             continue
         end
-        i = model.variable_info[term.variable_index_1].column + 1
-        j = model.variable_info[term.variable_index_2].column + 1
+        i = model.variable_info[term.variable_1].column + 1
+        j = model.variable_info[term.variable_2].column + 1
         push!(I, i < j ? i : j)
         push!(J, i < j ? j : i)
         push!(V, term.coefficient)
@@ -903,7 +903,6 @@ end
 function _get_objective_function(model::Optimizer, Q)
     f = _get_objective_function(model, nothing)
     return MOI.ScalarQuadraticFunction(
-        f.terms,
         MOI.ScalarQuadraticTerm{Float64}[
             MOI.ScalarQuadraticTerm(
                 Q.nzval[j],
@@ -912,6 +911,7 @@ function _get_objective_function(model::Optimizer, Q)
             )
             for col in 1:Q.m for j in Q.colptr[col]:(Q.colptr[col+1]-1)
         ],
+        f.terms,
         f.constant,
     )
 end
